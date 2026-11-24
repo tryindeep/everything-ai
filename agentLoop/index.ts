@@ -5,7 +5,7 @@ const ai = new GoogleGenAI({
   apiKey: Bun.env.GEMINI_API_KEY!,
 });
 
-// Our weather function
+// 1. Weather function
 async function getWeather(city: string) {
   const geo = await fetch(
     `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`
@@ -22,54 +22,68 @@ async function getWeather(city: string) {
 
   const data = await weather.json() as any;
 
-  return `${place.name}: ${data.current.temperature_2m}°C`;
+  return `${city}: ${data.current.temperature_2m}°C`;
 }
 
-// Ask Gemini to use our tool
-const response = await ai.interactions.create({
-  model: "gemini-3.5-flash-lite",
-  input: "What's the weather in delhi?",
-  tools: [
-    {
-      type: "function",
-      name: "get_weather",
-      description: "Get current weather of a city",
-      parameters: {
-        type: "object",
-        properties: {
-          city: { type: "string" },
+// 2. Agent loop
+async function main() {
+  let input: any =
+    "Check weather in Gurgaon, Noida and Delhi. Use one tool call at a time.";
+
+  let previousId: string | undefined;
+
+  while (true) {
+    const response = await ai.interactions.create({
+      model: "gemini-3.5-flash-lite",
+      input,
+      previous_interaction_id: previousId,
+      tools: [
+        {
+          type: "function",
+          name: "get_weather",
+          description: "Get weather of a city",
+          parameters: {
+            type: "object",
+            properties: {
+              city: { type: "string" },
+            },
+            required: ["city"],
+          },
         },
-        required: ["city"],
-      },
-    },
-  ],
-});
+      ],
+    });
 
-// Execute the tool
-const call = response.steps.find(
-  (step) => step.type === "function_call"
-);
+    const call = response.steps.find(
+      (step) => step.type === "function_call"
+    );
 
-if (call && call.type === "function_call") {
-  const args = call.arguments as { city: string };
+    // No more tool calls
+    if (!call || call.type !== "function_call") {
+      console.log(response.output_text);
+      break;
+    }
 
-  const result = await getWeather(args.city);
+    // Execute the tool
+    const { city } = call.arguments as { city: string };
 
-  // =============== Send result back to Gemini ===================== 
-  const finalResponse = await ai.interactions.create({
-    model: "gemini-3.5-flash-lite",
-    previous_interaction_id: response.id,
-    input: [
+    console.log("Checking:", city);
+
+    const result = await getWeather(city);
+
+    console.log("Result:", result);
+
+    // Send result back to Gemini
+    input = [
       {
         type: "function_result",
         name: call.name,
         call_id: call.id,
-        result: result,
+        result,
       },
-    ],
-  });
+    ];
 
-  console.log(finalResponse.output_text);
-} else {
-  console.log(response.output_text);
+    previousId = response.id;
+  }
 }
+
+main().catch(console.error);
